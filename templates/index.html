@@ -1,21 +1,20 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Normalizador PDF (300 DPI)</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 50px; }
-        .box { border: 1px solid #ccc; padding: 20px; border-radius: 10px; width: 400px; }
-        input[type=file], input[type=submit] { margin-top: 10px; }
-    </style>
+    <title>PDF Normalizer</title>
 </head>
 <body>
-    <h2>Normalizador PDF (300 DPI)</h2>
-    <div class="box">
-        <form method="post" enctype="multipart/form-data">
-            <label>Selecciona un PDF:</label><br>
-            <input type="file" name="file" accept="application/pdf" required><br>
-            <input type="submit" value="Normalizar y Descargar">
-        </form>
-    </div>
+    <h1>Subir PDF para normalizar DPI</h1>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <p style="color: {{ 'red' if category == 'error' else 'orange' if category == 'warning' else 'green' }}">{{ message }}</p>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    <form method="post" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".pdf" required>
+        <input type="submit" value="Normalizar PDF">
+    </form>
 </body>
 </html>

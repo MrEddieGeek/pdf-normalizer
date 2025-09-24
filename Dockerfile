@@ -1,11 +1,26 @@
-FROM python:3.11-slim
+# Usa Python 3.12 como base
+FROM python:3.12-slim
 
-# Instalar ghostscript
-RUN apt-get update && apt-get install -y ghostscript && rm -rf /var/lib/apt/lists/*
+# Instala paquetes del sistema necesarios (Ghostscript, ImageMagick, etc.)
+RUN apt-get update && apt-get install -y \
+    ghostscript \
+    imagemagick \
+    poppler-utils \
+    img2pdf \
+    libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
 
+# Copia el código de la app
+COPY . /app
+
+# Establece el directorio de trabajo
 WORKDIR /app
-COPY . .
 
+# Instala dependencias Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-CMD ["gunicorn", "-b", "0.0.0.0:8080", "app:app"]
+# Expone el puerto (Render usa $PORT automáticamente)
+EXPOSE $PORT
+
+# Comando para iniciar la app con Gunicorn (usa $PORT de Render)
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:$PORT", "--workers", "1", "--timeout", "0"]
