@@ -7,28 +7,25 @@ from flask import Flask, request, send_file, render_template, flash, redirect, u
 from werkzeug.utils import secure_filename
 import magic
 
-# Configurar logging para producción
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = "uploads"
 app.config['OUTPUT_FOLDER'] = "outputs"
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # Límite de 16MB
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'super_secret_key')
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 
 def validate_pdf(file_path):
-    """Valida que el archivo sea un PDF usando python-magic."""
     mime = magic.Magic(mime=True)
     mime_type = mime.from_file(file_path)
     logger.info(f"Validando archivo: {file_path}, MIME: {mime_type}")
     return mime_type == 'application/pdf'
 
 def check_dpi(pdf_path):
-    """Verifica los DPI de las imágenes en un PDF usando pdfimages."""
     logger.info(f"Verificando DPI del archivo: {pdf_path}")
     try:
         result = subprocess.run(['pdfimages', '-list', pdf_path], capture_output=True, text=True, check=True)
@@ -46,8 +43,6 @@ def check_dpi(pdf_path):
                 except (ValueError, IndexError) as e:
                     logger.warning(f"Error al parsear línea de pdfimages: {line}, error: {e}")
                     continue
-            else:
-                logger.warning(f"Formato inesperado en línea de pdfimages: {line}")
         logger.info(f"DPI detectados: {dpi_values}")
         return dpi_values
     except subprocess.CalledProcessError as e:
@@ -56,7 +51,6 @@ def check_dpi(pdf_path):
         return []
 
 def run_ghostscript(input_path, output_path):
-    """Ejecuta Ghostscript para normalizar el PDF a escala de grises y PDF/A."""
     cmd = [
         'gs',
         '-sDEVICE=pdfwrite',
@@ -66,27 +60,25 @@ def run_ghostscript(input_path, output_path):
         '-dNOPAUSE', '-dQUIET', '-dBATCH',
         '-dAutoFilterColorImages=false',
         '-dColorImageFilter=/DCTEncode',
-        '-dColorImageResolution=300',
+        '-dColorImageResolution=300',  # Forzar resolución a 300 DPI
         '-dGrayImageResolution=300',
         '-dMonoImageResolution=300',
-        '-sColorConversionStrategy=Gray',
-        '-dProcessColorModel=/DeviceGray',
-        '-dDownsampleColorImages=true',
-        '-dDownsampleGrayImages=true',
-        '-dDownsampleMonoImages=true',
+        '-dDownsampleColorImages=false',  # Desactivar downsampling
+        '-dDownsampleGrayImages=false',
+        '-dDownsampleMonoImages=false',
         '-dColorImageDownsampleType=/Bicubic',
         '-dGrayImageDownsampleType=/Bicubic',
         '-dMonoImageDownsampleType=/Bicubic',
-        '-dColorImageDownsampleThreshold=1.0',
-        '-dGrayImageDownsampleThreshold=1.0',
-        '-dMonoImageDownsampleThreshold=1.0',
-        '-dPreserveOPIComments=false',
-        '-dUseCropBox=true',
-        f'-sOutputFile={output_path}',
+        '-dProcessColorModel=/DeviceGray',
+        '-sOutputFile={}'.format(output_path),
         input_path
     ]
-    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-    logger.info(f"Ghostscript ejecutado con éxito: {result.stdout}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        logger.info(f"Ghostscript ejecutado con éxito: {result.stdout}")
+    else:
+        logger.error(f"Error en Ghostscript: {result.stderr}")
+        raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stderr)
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -122,7 +114,6 @@ def index():
             flash("El archivo subido no es un PDF válido.", "error")
             return redirect(url_for('index'))
 
-        # Verificar DPI iniciales
         dpi_values = check_dpi(input_path)
         if dpi_values:
             invalid_dpis = [(page, dpi) for page, dpi in dpi_values if dpi < 290 or dpi > 310]
@@ -137,14 +128,13 @@ def index():
             flash("No se detectaron imágenes en el PDF original o error al verificar DPI.", "warning")
 
         try:
-            # Rasterizar si DPI bajos (<290)
             min_dpi = min([dpi for _, dpi in dpi_values]) if dpi_values else float('inf')
             if min_dpi < 290:
                 logger.info("DPI bajos detectados, rasterizando con pdftoppm a 300 DPI en escala de grises.")
                 os.makedirs(temp_image_dir, exist_ok=True)
                 temp_image_prefix = os.path.join(temp_image_dir, 'page')
                 result = subprocess.run(['pdftoppm', '-r', '300', '-gray', input_path, temp_image_prefix], 
-                                      capture_output=True, text=True, check=True)
+                                      capture_output=True, text=True)
                 logger.info(f"pdftoppm ejecutado: stdout={result.stdout}, stderr={result.stderr}")
                 image_files = sorted(glob.glob(f"{temp_image_dir}/*.ppm"))
                 if not image_files:
@@ -154,13 +144,12 @@ def index():
                 else:
                     logger.info(f"Imágenes generadas: {image_files}")
                     subprocess.run(['img2pdf'] + image_files + ['-o', temp_pdf], check=True)
-                    input_path = temp_pdf  # Usar temp_pdf para Ghostscript
+                    input_path = temp_pdf
                     run_ghostscript(input_path, output_path)
             else:
                 logger.info("DPI válidos, procesando solo con Ghostscript.")
                 run_ghostscript(input_path, output_path)
 
-            # Verificar DPI del PDF resultante
             dpi_values = check_dpi(output_path)
             if dpi_values:
                 invalid_dpis = [(page, dpi) for page, dpi in dpi_values if dpi < 290 or dpi > 310]
@@ -177,10 +166,8 @@ def index():
                 logger.warning("No se detectaron imágenes en el PDF normalizado.")
                 flash("No se detectaron imágenes en el PDF normalizado, pero el procesamiento continuó.", "warning")
 
-            logger.info(f"Enviando archivo normalizado: {output_path}")
             response = send_file(output_path, as_attachment=True)
 
-            # Limpiar archivos temporales
             for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER']]:
                 if os.path.exists(folder):
                     for f in os.listdir(folder):
