@@ -2,6 +2,7 @@ import os
 import subprocess
 import logging
 import glob
+import shutil
 from flask import Flask, request, send_file, render_template, flash, redirect, url_for
 from werkzeug.utils import secure_filename
 import magic
@@ -32,20 +33,21 @@ def check_dpi(pdf_path):
     try:
         result = subprocess.run(['pdfimages', '-list', pdf_path], capture_output=True, text=True, check=True)
         logger.info(f"Salida completa de pdfimages: {result.stdout}")
-        dpi_lines = [line for line in result.stdout.splitlines() if 'image' in line]
+        dpi_lines = [line for line in result.stdout.splitlines() if 'image' in line or 'smask' in line]
         dpi_values = []
         for line in dpi_lines:
             parts = line.split()
-            try:
-                # DPI suelen estar en columnas 10 y 11, pero verificamos dinámicamente
-                if len(parts) >= 12 and parts[8].isdigit() and parts[9].isdigit():
-                    dpi_x, dpi_y = float(parts[10]), float(parts[11])
-                    dpi_values.append((int(parts[0]), min(dpi_x, dpi_y)))  # Página y DPI mínimo
-                else:
-                    logger.warning(f"Formato inesperado en línea de pdfimages: {line}")
-            except (IndexError, ValueError) as e:
-                logger.warning(f"Error al parsear línea de pdfimages: {line}, error: {e}")
-                continue
+            if len(parts) >= 14:
+                try:
+                    dpi_x = float(parts[12])
+                    dpi_y = float(parts[13])
+                    page = int(parts[0])
+                    dpi_values.append((page, min(dpi_x, dpi_y)))
+                except (ValueError, IndexError) as e:
+                    logger.warning(f"Error al parsear línea de pdfimages: {line}, error: {e}")
+                    continue
+            else:
+                logger.warning(f"Formato inesperado en línea de pdfimages: {line}")
         logger.info(f"DPI detectados: {dpi_values}")
         return dpi_values
     except subprocess.CalledProcessError as e:
@@ -76,6 +78,7 @@ def index():
         filename = secure_filename(file.filename)
         input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         output_path = os.path.join(app.config['OUTPUT_FOLDER'], f"normalizado_{filename}")
+        temp_image_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_images')
         logger.info(f"Guardando archivo en: {input_path}")
         file.save(input_path)
 
@@ -99,16 +102,30 @@ def index():
             logger.warning("No se detectaron imágenes o error al verificar DPI en el PDF original.")
             flash("No se detectaron imágenes en el PDF original o error al verificar DPI.", "warning")
 
-        # Normalizar PDF con Ghostscript (300 DPI, escala de grises, PDF/A-1b)
+        # Rasterizar si hay DPI bajos
         try:
+            min_dpi = min([dpi for _, dpi in dpi_values]) if dpi_values else float('inf')
+            if min_dpi < 290:
+                logger.info("DPI bajos detectados, rasterizando con pdftoppm a 300 DPI en escala de grises.")
+                os.makedirs(temp_image_dir, exist_ok=True)
+                temp_image_prefix = os.path.join(temp_image_dir, 'page')
+                subprocess.run(['pdftoppm', '-r', '300', '-gray', input_path, temp_image_prefix], check=True)
+                temp_pdf = os.path.join(app.config['OUTPUT_FOLDER'], f"temp_{filename}")
+                image_files = sorted(glob.glob(f"{temp_image_dir}/*.ppm"))
+                if not image_files:
+                    raise ValueError("No se generaron imágenes con pdftoppm.")
+                subprocess.run(['img2pdf'] + image_files + ['-o', temp_pdf], check=True)
+                input_path = temp_pdf  # Usar temp_pdf para Ghostscript
+
+            # Normalizar con Ghostscript (300 DPI, escala de grises, PDF/A-1b)
             logger.info(f"Normalizando PDF: {input_path} -> {output_path}")
             cmd = [
                 'gs',
                 '-sDEVICE=pdfwrite',
                 '-dCompatibilityLevel=1.4',
-                '-dPDFA=1',  # PDF/A-1b para VUCEM
+                '-dPDFA=1',
                 '-dPDFACompatibilityPolicy=1',
-                '-dNOPAUSE', '-dBATCH', '-dQUIET',
+                '-dNOPAUSE', '-dQUIET', '-dBATCH',
                 '-dAutoFilterColorImages=false',
                 '-dColorImageFilter=/DCTEncode',
                 '-dColorImageResolution=300',
@@ -119,7 +136,7 @@ def index():
                 '-dDownsampleColorImages=true',
                 '-dDownsampleGrayImages=true',
                 '-dDownsampleMonoImages=true',
-                '-dColorImageDownsampleType=/Bicubic',  # Mejor calidad de reescalado
+                '-dColorImageDownsampleType=/Bicubic',
                 '-dGrayImageDownsampleType=/Bicubic',
                 '-dMonoImageDownsampleType=/Bicubic',
                 '-dColorImageDownsampleThreshold=1.0',
@@ -160,12 +177,14 @@ def index():
                         os.remove(os.path.join(folder, f))
                     except Exception as e:
                         logger.warning(f"Error al eliminar archivo {f}: {e}")
+            if os.path.exists(temp_image_dir):
+                shutil.rmtree(temp_image_dir)
 
             return response
 
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error al procesar el PDF: {e.stderr}")
-            flash(f"Error al procesar el PDF: {e.stderr}", "error")
+        except (subprocess.CalledProcessError, ValueError) as e:
+            logger.error(f"Error al procesar el PDF: {str(e)}")
+            flash(f"Error al procesar el PDF: {str(e)}", "error")
             for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER']]:
                 if os.path.exists(folder):
                     for f in os.listdir(folder):
@@ -173,6 +192,8 @@ def index():
                             os.remove(os.path.join(folder, f))
                         except Exception as e:
                             logger.warning(f"Error al eliminar archivo {f}: {e}")
+            if os.path.exists(temp_image_dir):
+                shutil.rmtree(temp_image_dir)
             return redirect(url_for('index'))
 
     template_path = os.path.join(app.template_folder, 'index.html')
