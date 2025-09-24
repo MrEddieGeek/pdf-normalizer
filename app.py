@@ -134,6 +134,8 @@ def index():
                     '-dColorImageResolution=300',
                     '-dGrayImageResolution=300',
                     '-dMonoImageResolution=300',
+                    '-sColorConversionStrategy=Gray',
+                    '-dProcessColorModel=/DeviceGray',
                     f'-sOutputFile={output_path}', temp_pdf
                 ]
                 subprocess.run(cmd, check=True)
