@@ -11,13 +11,15 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = "uploads"
-app.config['OUTPUT_FOLDER'] = "outputs"
+app.config['UPLOAD_FOLDER'] = "/tmp/uploads"  # Usar /tmp para evitar problemas de permisos
+app.config['OUTPUT_FOLDER'] = "/tmp/outputs"
+app.config['TEMP_IMAGE_DIR'] = "/tmp/temp_images"
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'super_secret_key')
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
+os.makedirs(app.config['TEMP_IMAGE_DIR'], exist_ok=True)
 
 def validate_pdf(file_path):
     mime = magic.Magic(mime=True)
@@ -50,35 +52,44 @@ def check_dpi(pdf_path):
         flash(f"Error al verificar DPI: {e.stderr}", "error")
         return []
 
-def run_ghostscript(input_path, output_path):
+def preprocess_pdf(input_path, temp_path):
+    logger.info(f"Preprocesando PDF: {input_path}")
     cmd = [
-        'gs',
-        '-sDEVICE=pdfwrite',
-        '-dCompatibilityLevel=1.4',
-        '-dPDFA=1',
-        '-dPDFACompatibilityPolicy=1',
-        '-dNOPAUSE', '-dQUIET', '-dBATCH',
-        '-dAutoFilterColorImages=false',
-        '-dColorImageFilter=/DCTEncode',
-        '-dColorImageResolution=300',  # Forzar resolución a 300 DPI
-        '-dGrayImageResolution=300',
-        '-dMonoImageResolution=300',
-        '-dDownsampleColorImages=false',  # Desactivar downsampling
-        '-dDownsampleGrayImages=false',
-        '-dDownsampleMonoImages=false',
-        '-dColorImageDownsampleType=/Bicubic',
-        '-dGrayImageDownsampleType=/Bicubic',
-        '-dMonoImageDownsampleType=/Bicubic',
-        '-dProcessColorModel=/DeviceGray',
-        '-sOutputFile={}'.format(output_path),
-        input_path
+        'gs', '-sDEVICE=pdfwrite', '-dCompatibilityLevel=1.4', '-dNOPAUSE', '-dQUIET', '-dBATCH',
+        '-sOutputFile={}'.format(temp_path), input_path
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode == 0:
-        logger.info(f"Ghostscript ejecutado con éxito: {result.stdout}")
-    else:
+    if result.returncode != 0:
+        logger.error(f"Error en preprocesamiento con Ghostscript: {result.stderr}")
+        raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stderr)
+    return temp_path
+
+def run_pdftoppm(input_path, temp_image_prefix):
+    logger.info(f"Rasterizando con pdftoppm: {input_path}")
+    result = subprocess.run(['pdftoppm', '-r', '300', '-gray', input_path, temp_image_prefix], 
+                           capture_output=True, text=True)
+    logger.info(f"pdftoppm ejecutado: stdout={result.stdout}, stderr={result.stderr}")
+    image_files = sorted(glob.glob(f"{os.path.dirname(temp_image_prefix)}/*.ppm"))
+    if not image_files:
+        logger.error("No se generaron imágenes con pdftoppm.")
+        raise RuntimeError("pdftoppm no generó imágenes.")
+    return image_files
+
+def run_ghostscript(input_path, output_path):
+    logger.info(f"Normalizando con Ghostscript: {input_path} -> {output_path}")
+    cmd = [
+        'gs', '-sDEVICE=pdfwrite', '-dCompatibilityLevel=1.4', '-dPDFA=1', '-dPDFACompatibilityPolicy=1',
+        '-dNOPAUSE', '-dQUIET', '-dBATCH', '-dAutoFilterColorImages=false', '-dColorImageFilter=/DCTEncode',
+        '-dColorImageResolution=300', '-dGrayImageResolution=300', '-dMonoImageResolution=300',
+        '-dDownsampleColorImages=false', '-dDownsampleGrayImages=false', '-dDownsampleMonoImages=false',
+        '-dColorImageDownsampleType=/Bicubic', '-dGrayImageDownsampleType=/Bicubic', '-dMonoImageDownsampleType=/Bicubic',
+        '-dProcessColorModel=/DeviceGray', '-sOutputFile={}'.format(output_path), input_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
         logger.error(f"Error en Ghostscript: {result.stderr}")
         raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stderr)
+    logger.info(f"Ghostscript ejecutado con éxito: {result.stdout}")
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -103,7 +114,6 @@ def index():
         filename = secure_filename(file.filename)
         input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         output_path = os.path.join(app.config['OUTPUT_FOLDER'], f"normalizado_{filename}")
-        temp_image_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_images')
         temp_pdf = os.path.join(app.config['OUTPUT_FOLDER'], f"temp_{filename}")
         logger.info(f"Guardando archivo en: {input_path}")
         file.save(input_path)
@@ -130,25 +140,18 @@ def index():
         try:
             min_dpi = min([dpi for _, dpi in dpi_values]) if dpi_values else float('inf')
             if min_dpi < 290:
-                logger.info("DPI bajos detectados, rasterizando con pdftoppm a 300 DPI en escala de grises.")
-                os.makedirs(temp_image_dir, exist_ok=True)
-                temp_image_prefix = os.path.join(temp_image_dir, 'page')
-                result = subprocess.run(['pdftoppm', '-r', '300', '-gray', input_path, temp_image_prefix], 
-                                      capture_output=True, text=True)
-                logger.info(f"pdftoppm ejecutado: stdout={result.stdout}, stderr={result.stderr}")
-                image_files = sorted(glob.glob(f"{temp_image_dir}/*.ppm"))
-                if not image_files:
-                    logger.error("No se generaron imágenes con pdftoppm.")
-                    flash("Error: No se generaron imágenes con pdftoppm. Intentando con Ghostscript solo.", "warning")
-                    run_ghostscript(input_path, output_path)
-                else:
+                logger.info("DPI bajos detectados, intentando rasterización con pdftoppm.")
+                try:
+                    temp_preprocessed = preprocess_pdf(input_path, temp_pdf)
+                    image_files = run_pdftoppm(temp_preprocessed, os.path.join(app.config['TEMP_IMAGE_DIR'], 'page'))
                     logger.info(f"Imágenes generadas: {image_files}")
                     subprocess.run(['img2pdf'] + image_files + ['-o', temp_pdf], check=True)
                     input_path = temp_pdf
-                    run_ghostscript(input_path, output_path)
-            else:
-                logger.info("DPI válidos, procesando solo con Ghostscript.")
-                run_ghostscript(input_path, output_path)
+                except (subprocess.CalledProcessError, RuntimeError) as e:
+                    logger.warning(f"Rasterización con pdftoppm falló: {str(e)}. Usando Ghostscript solo.")
+                    flash("Rasterización falló, usando Ghostscript como fallback.", "warning")
+
+            run_ghostscript(input_path, output_path)
 
             dpi_values = check_dpi(output_path)
             if dpi_values:
@@ -168,30 +171,36 @@ def index():
 
             response = send_file(output_path, as_attachment=True)
 
-            for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER']]:
+            for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'], app.config['TEMP_IMAGE_DIR']]:
                 if os.path.exists(folder):
                     for f in os.listdir(folder):
                         try:
                             os.remove(os.path.join(folder, f))
                         except Exception as e:
                             logger.warning(f"Error al eliminar archivo {f}: {e}")
-            if os.path.exists(temp_image_dir):
-                shutil.rmtree(temp_image_dir)
+                    if folder != app.config['UPLOAD_FOLDER']:
+                        try:
+                            os.rmdir(folder)
+                        except Exception as e:
+                            logger.warning(f"Error al eliminar directorio {folder}: {e}")
 
             return response
 
         except (subprocess.CalledProcessError, ValueError) as e:
             logger.error(f"Error al procesar el PDF: {str(e)}")
             flash(f"Error al procesar el PDF: {str(e)}", "error")
-            for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER']]:
+            for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'], app.config['TEMP_IMAGE_DIR']]:
                 if os.path.exists(folder):
                     for f in os.listdir(folder):
                         try:
                             os.remove(os.path.join(folder, f))
                         except Exception as e:
                             logger.warning(f"Error al eliminar archivo {f}: {e}")
-            if os.path.exists(temp_image_dir):
-                shutil.rmtree(temp_image_dir)
+                    if folder != app.config['UPLOAD_FOLDER']:
+                        try:
+                            os.rmdir(folder)
+                        except Exception as e:
+                            logger.warning(f"Error al eliminar directorio {folder}: {e}")
             return redirect(url_for('index'))
 
     template_path = os.path.join(app.template_folder, 'index.html')
