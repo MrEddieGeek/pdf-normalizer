@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Normalizador PDF (300 DPI)</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 50px; }
+        .box { border: 1px solid #ccc; padding: 20px; border-radius: 10px; width: 400px; }
+        input[type=file], input[type=submit] { margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h2>Normalizador PDF (300 DPI)</h2>
+    <div class="box">
+        <form method="post" enctype="multipart/form-data">
+            <label>Selecciona un PDF:</label><br>
+            <input type="file" name="file" accept="application/pdf" required><br>
+            <input type="submit" value="Normalizar y Descargar">
+        </form>
+    </div>
+</body>
+</html>
