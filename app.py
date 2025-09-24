@@ -1,6 +1,7 @@
 import os
 import subprocess
 import logging
+import glob
 from flask import Flask, request, send_file, render_template, flash, redirect, url_for
 from werkzeug.utils import secure_filename
 import magic
@@ -30,13 +31,14 @@ def check_dpi(pdf_path):
     logger.info(f"Verificando DPI del archivo: {pdf_path}")
     try:
         result = subprocess.run(['pdfimages', '-list', pdf_path], capture_output=True, text=True, check=True)
+        logger.info(f"Salida completa de pdfimages: {result.stdout}")
         dpi_lines = [line for line in result.stdout.splitlines() if 'image' in line]
         dpi_values = []
         for line in dpi_lines:
             parts = line.split()
             try:
-                # DPI suelen estar en columnas 10 y 11, pero verificamos longitud
-                if len(parts) >= 12:
+                # DPI suelen estar en columnas 10 y 11, pero verificamos dinámicamente
+                if len(parts) >= 12 and parts[8].isdigit() and parts[9].isdigit():
                     dpi_x, dpi_y = float(parts[10]), float(parts[11])
                     dpi_values.append((int(parts[0]), min(dpi_x, dpi_y)))  # Página y DPI mínimo
                 else:
@@ -95,6 +97,7 @@ def index():
                 flash("Todos los DPI están dentro del rango permitido.", "info")
         else:
             logger.warning("No se detectaron imágenes o error al verificar DPI en el PDF original.")
+            flash("No se detectaron imágenes en el PDF original o error al verificar DPI.", "warning")
 
         # Normalizar PDF con Ghostscript (300 DPI, escala de grises, PDF/A-1b)
         try:
@@ -105,7 +108,7 @@ def index():
                 '-dCompatibilityLevel=1.4',
                 '-dPDFA=1',  # PDF/A-1b para VUCEM
                 '-dPDFACompatibilityPolicy=1',
-                '-dNOPAUSE', '-dQUIET', '-dBATCH',
+                '-dNOPAUSE', '-dBATCH', '-dQUIET',
                 '-dAutoFilterColorImages=false',
                 '-dColorImageFilter=/DCTEncode',
                 '-dColorImageResolution=300',
@@ -116,11 +119,14 @@ def index():
                 '-dDownsampleColorImages=true',
                 '-dDownsampleGrayImages=true',
                 '-dDownsampleMonoImages=true',
+                '-dColorImageDownsampleType=/Bicubic',  # Mejor calidad de reescalado
+                '-dGrayImageDownsampleType=/Bicubic',
+                '-dMonoImageDownsampleType=/Bicubic',
                 '-dColorImageDownsampleThreshold=1.0',
                 '-dGrayImageDownsampleThreshold=1.0',
                 '-dMonoImageDownsampleThreshold=1.0',
-                '-dPreserveOPIComments=false',  # Evitar problemas con metadatos
-                '-dUseCropBox=true',  # Mantener dimensiones exactas
+                '-dPreserveOPIComments=false',
+                '-dUseCropBox=true',
                 f'-sOutputFile={output_path}',
                 input_path
             ]
