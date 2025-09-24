@@ -11,17 +11,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = "/tmp/uploads"
-app.config['OUTPUT_FOLDER'] = "/tmp/outputs"
-app.config['TEMP_IMAGE_DIR'] = "/tmp/temp_images"
-app.config['TEMP_PDF_DIR'] = "/tmp/temp_pdfs"
+app.config['UPLOAD_FOLDER'] = "/app/uploads"
+app.config['OUTPUT_FOLDER'] = "/app/outputs"
+app.config['TEMP_IMAGE_DIR'] = "/app/temp_images"
+app.config['TEMP_PDF_DIR'] = "/app/temp_pdfs"
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'super_secret_key')
 
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
-os.makedirs(app.config['TEMP_IMAGE_DIR'], exist_ok=True)
-os.makedirs(app.config['TEMP_PDF_DIR'], exist_ok=True)
+# Crear directorios explícitamente
+for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'], app.config['TEMP_IMAGE_DIR'], app.config['TEMP_PDF_DIR']]:
+    os.makedirs(folder, exist_ok=True)
 
 def validate_pdf(file_path):
     mime = magic.Magic(mime=True)
@@ -64,6 +63,7 @@ def preprocess_pdf(input_path, temp_path):
     if result.returncode != 0:
         logger.error(f"Error en preprocesamiento con Ghostscript: {result.stderr}")
         raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stderr)
+    logger.info(f"Preprocesamiento exitoso: {temp_path}")
     return temp_path
 
 def run_pdftoppm(input_path, temp_image_prefix):
@@ -75,6 +75,7 @@ def run_pdftoppm(input_path, temp_image_prefix):
     if not image_files:
         logger.error("No se generaron imágenes con pdftoppm.")
         raise RuntimeError("pdftoppm no generó imágenes.")
+    logger.info(f"Imágenes generadas: {image_files}")
     return image_files
 
 def run_ghostscript(input_path, output_path):
@@ -85,8 +86,7 @@ def run_ghostscript(input_path, output_path):
         '-dColorImageResolution=300', '-dGrayImageResolution=300', '-dMonoImageResolution=300',
         '-dDownsampleColorImages=false', '-dDownsampleGrayImages=false', '-dDownsampleMonoImages=false',
         '-dColorImageDownsampleType=/Bicubic', '-dGrayImageDownsampleType=/Bicubic', '-dMonoImageDownsampleType=/Bicubic',
-        '-dProcessColorModel=/DeviceGray', '-r300',  # Forzar resolución de salida a 300 DPI
-        '-sOutputFile={}'.format(output_path), input_path
+        '-dProcessColorModel=/DeviceGray', '-r300', '-sOutputFile={}'.format(output_path), input_path
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:

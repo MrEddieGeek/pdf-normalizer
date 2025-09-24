@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y \
     img2pdf \
     && rm -rf /var/lib/apt/lists/*
 
+RUN mkdir -p /app/uploads /app/outputs /app/temp_images /app/temp_pdfs
+
 COPY . /app
 
 RUN pip install --no-cache-dir -r requirements.txt
