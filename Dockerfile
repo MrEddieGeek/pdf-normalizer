@@ -19,8 +19,8 @@ WORKDIR /app
 # Instala dependencias Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Expone el puerto (Render usa $PORT automáticamente)
+# Expone el puerto (Render usa $PORT dinámicamente)
 EXPOSE $PORT
 
-# Comando para iniciar la app con Gunicorn (usa $PORT de Render)
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:$PORT", "--workers", "1", "--timeout", "0"]
+# Usa un comando de shell para asegurar que $PORT se resuelva
+CMD exec gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
