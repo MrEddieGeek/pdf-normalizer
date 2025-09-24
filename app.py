@@ -11,15 +11,17 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = "/tmp/uploads"  # Usar /tmp para evitar problemas de permisos
+app.config['UPLOAD_FOLDER'] = "/tmp/uploads"
 app.config['OUTPUT_FOLDER'] = "/tmp/outputs"
 app.config['TEMP_IMAGE_DIR'] = "/tmp/temp_images"
+app.config['TEMP_PDF_DIR'] = "/tmp/temp_pdfs"
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'super_secret_key')
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 os.makedirs(app.config['TEMP_IMAGE_DIR'], exist_ok=True)
+os.makedirs(app.config['TEMP_PDF_DIR'], exist_ok=True)
 
 def validate_pdf(file_path):
     mime = magic.Magic(mime=True)
@@ -83,7 +85,8 @@ def run_ghostscript(input_path, output_path):
         '-dColorImageResolution=300', '-dGrayImageResolution=300', '-dMonoImageResolution=300',
         '-dDownsampleColorImages=false', '-dDownsampleGrayImages=false', '-dDownsampleMonoImages=false',
         '-dColorImageDownsampleType=/Bicubic', '-dGrayImageDownsampleType=/Bicubic', '-dMonoImageDownsampleType=/Bicubic',
-        '-dProcessColorModel=/DeviceGray', '-sOutputFile={}'.format(output_path), input_path
+        '-dProcessColorModel=/DeviceGray', '-r300',  # Forzar resolución de salida a 300 DPI
+        '-sOutputFile={}'.format(output_path), input_path
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -114,7 +117,7 @@ def index():
         filename = secure_filename(file.filename)
         input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         output_path = os.path.join(app.config['OUTPUT_FOLDER'], f"normalizado_{filename}")
-        temp_pdf = os.path.join(app.config['OUTPUT_FOLDER'], f"temp_{filename}")
+        temp_pdf = os.path.join(app.config['TEMP_PDF_DIR'], f"temp_{filename}")
         logger.info(f"Guardando archivo en: {input_path}")
         file.save(input_path)
 
@@ -142,8 +145,8 @@ def index():
             if min_dpi < 290:
                 logger.info("DPI bajos detectados, intentando rasterización con pdftoppm.")
                 try:
-                    temp_preprocessed = preprocess_pdf(input_path, temp_pdf)
-                    image_files = run_pdftoppm(temp_preprocessed, os.path.join(app.config['TEMP_IMAGE_DIR'], 'page'))
+                    preprocessed_pdf = preprocess_pdf(input_path, temp_pdf)
+                    image_files = run_pdftoppm(preprocessed_pdf, os.path.join(app.config['TEMP_IMAGE_DIR'], 'page'))
                     logger.info(f"Imágenes generadas: {image_files}")
                     subprocess.run(['img2pdf'] + image_files + ['-o', temp_pdf], check=True)
                     input_path = temp_pdf
@@ -171,7 +174,7 @@ def index():
 
             response = send_file(output_path, as_attachment=True)
 
-            for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'], app.config['TEMP_IMAGE_DIR']]:
+            for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'], app.config['TEMP_IMAGE_DIR'], app.config['TEMP_PDF_DIR']]:
                 if os.path.exists(folder):
                     for f in os.listdir(folder):
                         try:
@@ -189,7 +192,7 @@ def index():
         except (subprocess.CalledProcessError, ValueError) as e:
             logger.error(f"Error al procesar el PDF: {str(e)}")
             flash(f"Error al procesar el PDF: {str(e)}", "error")
-            for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'], app.config['TEMP_IMAGE_DIR']]:
+            for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'], app.config['TEMP_IMAGE_DIR'], app.config['TEMP_PDF_DIR']]:
                 if os.path.exists(folder):
                     for f in os.listdir(folder):
                         try:
