@@ -35,8 +35,12 @@ def check_dpi(pdf_path):
         for line in dpi_lines:
             parts = line.split()
             try:
-                dpi_x, dpi_y = float(parts[8]), float(parts[9])  # Columnas de DPI
-                dpi_values.append((int(parts[0]), min(dpi_x, dpi_y)))  # Página y DPI mínimo
+                # DPI suelen estar en columnas 10 y 11, pero verificamos longitud
+                if len(parts) >= 12:
+                    dpi_x, dpi_y = float(parts[10]), float(parts[11])
+                    dpi_values.append((int(parts[0]), min(dpi_x, dpi_y)))  # Página y DPI mínimo
+                else:
+                    logger.warning(f"Formato inesperado en línea de pdfimages: {line}")
             except (IndexError, ValueError) as e:
                 logger.warning(f"Error al parsear línea de pdfimages: {line}, error: {e}")
                 continue
@@ -89,6 +93,8 @@ def index():
             else:
                 logger.info("Todos los DPI están dentro del rango permitido.")
                 flash("Todos los DPI están dentro del rango permitido.", "info")
+        else:
+            logger.warning("No se detectaron imágenes o error al verificar DPI en el PDF original.")
 
         # Normalizar PDF con Ghostscript (300 DPI, escala de grises, PDF/A-1b)
         try:
@@ -110,9 +116,11 @@ def index():
                 '-dDownsampleColorImages=true',
                 '-dDownsampleGrayImages=true',
                 '-dDownsampleMonoImages=true',
-                '-dColorImageDownsampleThreshold=1.0',  # Forzar reescalado exacto
+                '-dColorImageDownsampleThreshold=1.0',
                 '-dGrayImageDownsampleThreshold=1.0',
                 '-dMonoImageDownsampleThreshold=1.0',
+                '-dPreserveOPIComments=false',  # Evitar problemas con metadatos
+                '-dUseCropBox=true',  # Mantener dimensiones exactas
                 f'-sOutputFile={output_path}',
                 input_path
             ]
@@ -134,7 +142,7 @@ def index():
                     flash("PDF normalizado correctamente a 300 DPI en escala de grises.", "success")
             else:
                 logger.warning("No se detectaron imágenes en el PDF normalizado.")
-                flash("No se detectaron imágenes en el PDF normalizado.", "warning")
+                flash("No se detectaron imágenes en el PDF normalizado, pero el procesamiento continuó.", "warning")
 
             logger.info(f"Enviando archivo normalizado: {output_path}")
             response = send_file(output_path, as_attachment=True)
