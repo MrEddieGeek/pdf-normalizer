@@ -1,6 +1,5 @@
 import os
 import subprocess
-import glob
 from flask import Flask, request, send_file, render_template, flash, redirect, url_for
 from werkzeug.utils import secure_filename
 import magic
@@ -9,7 +8,7 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = "uploads"
 app.config['OUTPUT_FOLDER'] = "outputs"
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # Límite de 16MB
-app.secret_key = "super_secret_key"
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'super_secret_key')  # Usar variable de entorno para producción
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
@@ -36,20 +35,6 @@ def check_dpi(pdf_path):
     except subprocess.CalledProcessError as e:
         flash(f"Error al verificar DPI: {e}", "error")
         return []
-
-def normalize_image_dpi(image_path, output_image_path, target_dpi=300):
-    """Ajusta DPI de una imagen usando ImageMagick."""
-    try:
-        cmd = [
-            'convert', image_path,
-            '-units', 'PixelsPerInch',
-            '-density', str(target_dpi),
-            output_image_path
-        ]
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        flash(f"Error al normalizar DPI de la imagen {image_path}: {e}", "error")
-        raise
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -86,59 +71,25 @@ def index():
             else:
                 flash("Todos los DPI están dentro del rango permitido.", "info")
 
-        # Extraer imágenes y ajustar DPI
+        # Normalizar PDF con Ghostscript (300 DPI, escala de grises, PDF/A-3)
         try:
-            temp_image_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_images')
-            os.makedirs(temp_image_dir, exist_ok=True)
-            temp_image_prefix = os.path.join(temp_image_dir, 'img')
-
-            # Intentar extraer imágenes (sin forzar JPEG)
-            subprocess.run(['pdfimages', input_path, temp_image_prefix], check=True)
-
-            # Buscar imágenes generadas (.jpg, .png, .ppm)
-            image_files = glob.glob(f"{temp_image_dir}/img*[0-9][0-9][0-9].[jp][pn][mg]")
-            if not image_files:
-                # Si no hay imágenes, usar Ghostscript directamente
-                flash("No se encontraron imágenes en el PDF. Normalizando con Ghostscript.", "warning")
-                cmd = [
-                    'gs', '-sDEVICE=pdfwrite',
-                    '-dCompatibilityLevel=1.4',
-                    '-dPDFSETTINGS=/prepress',
-                    '-dNOPAUSE', '-dQUIET', '-dBATCH',
-                    '-dColorImageResolution=300',
-                    '-dGrayImageResolution=300',
-                    '-dMonoImageResolution=300',
-                    f'-sOutputFile={output_path}', input_path
-                ]
-                subprocess.run(cmd, check=True)
-            else:
-                # Normalizar DPI de cada imagen
-                for img in image_files:
-                    normalized_img = os.path.join(temp_image_dir, f"normalized_{os.path.basename(img)}")
-                    normalize_image_dpi(img, normalized_img, target_dpi=300)
-
-                # Recomponer PDF con img2pdf
-                temp_pdf = os.path.join(app.config['OUTPUT_FOLDER'], f"temp_{filename}")
-                normalized_images = glob.glob(f"{temp_image_dir}/normalized_img*[0-9][0-9][0-9].[jp][pn][mg]")
-                if not normalized_images:
-                    flash("No se generaron imágenes normalizadas.", "error")
-                    raise ValueError("No images to process")
-                subprocess.run(['img2pdf'] + normalized_images + ['-o', temp_pdf], check=True)
-
-                # Optimizar con Ghostscript
-                cmd = [
-                    'gs', '-sDEVICE=pdfwrite',
-                    '-dCompatibilityLevel=1.4',
-                    '-dPDFSETTINGS=/prepress',
-                    '-dNOPAUSE', '-dQUIET', '-dBATCH',
-                    '-dColorImageResolution=300',
-                    '-dGrayImageResolution=300',
-                    '-dMonoImageResolution=300',
-                    '-sColorConversionStrategy=Gray',
-                    '-dProcessColorModel=/DeviceGray',
-                    f'-sOutputFile={output_path}', temp_pdf
-                ]
-                subprocess.run(cmd, check=True)
+            cmd = [
+                'gs',
+                '-sDEVICE=pdfwrite',
+                '-dCompatibilityLevel=1.4',
+                '-dPDFA=3',  # Generar PDF/A-3 para VUCEM
+                '-dPDFACompatibilityPolicy=1',
+                '-dPDFSETTINGS=/prepress',
+                '-dNOPAUSE', '-dQUIET', '-dBATCH',
+                '-dColorImageResolution=300',
+                '-dGrayImageResolution=300',
+                '-dMonoImageResolution=300',
+                '-sColorConversionStrategy=Gray',
+                '-dProcessColorModel=/DeviceGray',
+                f'-sOutputFile={output_path}',
+                input_path
+            ]
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
 
             # Verificar DPI del PDF resultante
             dpi_values = check_dpi(output_path)
@@ -147,33 +98,29 @@ def index():
                 if invalid_dpis:
                     flash(f"El PDF normalizado aún tiene DPI inválidos: {', '.join([f'Página {p}: {d} DPI' for p, d in invalid_dpis])}", "error")
                 else:
-                    flash("PDF normalizado correctamente a 300 DPI.", "success")
+                    flash("PDF normalizado correctamente a 300 DPI en escala de grises.", "success")
 
             response = send_file(output_path, as_attachment=True)
 
             # Limpiar archivos temporales
-            for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'], temp_image_dir]:
+            for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER']]:
                 for f in os.listdir(folder):
                     try:
                         os.remove(os.path.join(folder, f))
                     except:
                         pass
-            if os.path.exists(temp_image_dir):
-                os.rmdir(temp_image_dir)
 
             return response
 
-        except (subprocess.CalledProcessError, ValueError) as e:
-            flash(f"Error al procesar el PDF: {e}", "error")
-            for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER'], temp_image_dir]:
+        except subprocess.CalledProcessError as e:
+            flash(f"Error al procesar el PDF: {e.stderr}", "error")
+            for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER']]:
                 if os.path.exists(folder):
                     for f in os.listdir(folder):
                         try:
                             os.remove(os.path.join(folder, f))
                         except:
                             pass
-                    if folder == temp_image_dir:
-                        os.rmdir(temp_image_dir)
             return redirect(url_for('index'))
 
     template_path = os.path.join(app.template_folder, 'index.html')
