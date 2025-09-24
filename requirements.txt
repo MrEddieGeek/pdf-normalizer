@@ -1,4 +1,4 @@
 flask
 gunicorn  # Servidor de producción para Flask
-python-magic  # Para validar tipos de archivos
+python-magic-bin  # Para validar tipos de archivos
 werkzeug  # Ya incluido en Flask, pero por si acaso
